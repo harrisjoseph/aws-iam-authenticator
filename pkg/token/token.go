@@ -125,11 +125,11 @@ type getCallerIdentityWrapper struct {
 // Generator provides new tokens for the heptio authenticator.
 type Generator interface {
 	// Get a token using credentials in the default credentials chain.
-	Get(string) (string, error)
+	Get(clusterID string, tokenExpiry int) (string, error)
 	// GetWithRole creates a token by assuming the provided role, using the credentials in the default chain.
-	GetWithRole(clusterID, roleARN string) (string, error)
+	GetWithRole(clusterID, roleARN string, tokenExpiry int) (string, error)
 	// GetWithRoleForSession creates a token by assuming the provided role, using the provided session.
-	GetWithRoleForSession(clusterID string, roleARN string, sess *session.Session) (string, error)
+	GetWithRoleForSession(clusterID string, roleARN string, sess *session.Session, tokenExpiry int) (string, error)
 	// GetWithSTS assumes returns a token valid for clusterID using the given STS client.
 	GetWithSTS(clusterID string, stsAPI *sts.STS) (string, error)
 	// FormatJSON returns the client auth formatted json for the ExecCredential auth
@@ -146,8 +146,8 @@ func NewGenerator() (Generator, error) {
 
 // Get uses the directly available AWS credentials to return a token valid for
 // clusterID. It follows the default AWS credential handling behavior.
-func (g generator) Get(clusterID string) (string, error) {
-	return g.GetWithRole(clusterID, "")
+func (g generator) Get(clusterID string, tokenExpiry int) (string, error) {
+	return g.GetWithRole(clusterID, "", tokenExpiry)
 }
 
 func StdinStderrTokenProvider() (string, error) {
@@ -159,7 +159,7 @@ func StdinStderrTokenProvider() (string, error) {
 
 // GetWithRole assumes the given AWS IAM role and returns a token valid for
 // clusterID. If roleARN is empty, behaves like Get (does not assume a role).
-func (g generator) GetWithRole(clusterID string, roleARN string) (string, error) {
+func (g generator) GetWithRole(clusterID string, roleARN string, tokenExpiry int) (string, error) {
 	// create a session with the "base" credentials available
 	// (from environment variable, profile files, EC2 metadata, etc)
 	sess, err := session.NewSessionWithOptions(session.Options{
@@ -170,20 +170,24 @@ func (g generator) GetWithRole(clusterID string, roleARN string) (string, error)
 		return "", fmt.Errorf("could not create session: %v", err)
 	}
 
-	return g.GetWithRoleForSession(clusterID, roleARN, sess)
+	return g.GetWithRoleForSession(clusterID, roleARN, sess, tokenExpiry)
 }
 
 // GetWithRole assumes the given AWS IAM role for the given session and behaves
 // like GetWithRole.
-func (g generator) GetWithRoleForSession(clusterID string, roleARN string, sess *session.Session) (string, error) {
+func (g generator) GetWithRoleForSession(clusterID string, roleARN string, sess *session.Session, tokenExpiry int) (string, error) {
 	// use an STS client based on the direct credentials
 	stsAPI := sts.New(sess)
+
+	options := func(provider *stscreds.AssumeRoleProvider) {
+		provider.Duration = time.Duration(tokenExpiry) * time.Second
+	}
 
 	// if a roleARN was specified, replace the STS client with one that uses
 	// temporary credentials from that role.
 	if roleARN != "" {
 		// create STS-based credentials that will assume the given role
-		creds := stscreds.NewCredentials(sess, roleARN)
+		creds := stscreds.NewCredentials(sess, roleARN, options)
 
 		// create an STS API interface that uses the assumed role's temporary credentials
 		stsAPI = sts.New(sess, &aws.Config{Credentials: creds})
